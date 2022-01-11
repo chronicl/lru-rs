@@ -79,7 +79,9 @@ use core::usize;
 extern crate std;
 
 #[cfg(feature = "hashbrown")]
-use hashbrown::HashMap;
+// use hashbrown::HashMap;
+use dashmap::DashMap as HashMap;
+
 #[cfg(not(feature = "hashbrown"))]
 use std::collections::HashMap;
 
@@ -186,7 +188,7 @@ pub type DefaultHasher = hashbrown::hash_map::DefaultHashBuilder;
 pub type DefaultHasher = std::collections::hash_map::RandomState;
 
 /// An LRU Cache
-pub struct LruCache<K, V, S = DefaultHasher> {
+pub struct LruCache<K: Eq + Hash, V, S: Clone + BuildHasher = DefaultHasher> {
     map: HashMap<KeyRef<K>, Box<LruEntry<K, V>>, S>,
     cap: usize,
 
@@ -195,7 +197,7 @@ pub struct LruCache<K, V, S = DefaultHasher> {
     tail: *mut LruEntry<K, V>,
 }
 
-impl<K: Hash + Eq, V> LruCache<K, V> {
+impl<'a, K: 'a + Eq + Hash, V: 'a> LruCache<K, V> {
     /// Creates a new LRU Cache that holds at most `cap` items.
     ///
     /// # Example
@@ -205,7 +207,10 @@ impl<K: Hash + Eq, V> LruCache<K, V> {
     /// let mut cache: LruCache<isize, &str> = LruCache::new(10);
     /// ```
     pub fn new(cap: usize) -> LruCache<K, V> {
-        LruCache::construct(cap, HashMap::with_capacity(cap))
+        LruCache::construct(
+            cap,
+            HashMap::with_capacity_and_hasher(cap, DefaultHasher::new()),
+        )
     }
 
     /// Creates a new LRU Cache that never automatically evicts items.
@@ -221,7 +226,7 @@ impl<K: Hash + Eq, V> LruCache<K, V> {
     }
 }
 
-impl<K: Hash + Eq, V, S: BuildHasher> LruCache<K, V, S> {
+impl<'a, K: 'a + Eq + Hash, V: 'a, S: 'a + Clone + BuildHasher> LruCache<K, V, S> {
     /// Creates a new LRU Cache that holds at most `cap` items and
     /// uses the provided hash builder to hash keys.
     ///
@@ -233,7 +238,10 @@ impl<K: Hash + Eq, V, S: BuildHasher> LruCache<K, V, S> {
     /// let s = DefaultHasher::default();
     /// let mut cache: LruCache<isize, &str> = LruCache::with_hasher(10, s);
     /// ```
-    pub fn with_hasher(cap: usize, hash_builder: S) -> LruCache<K, V, S> {
+    pub fn with_hasher(cap: usize, hash_builder: S) -> LruCache<K, V, S>
+    where
+        S: Clone,
+    {
         LruCache::construct(cap, HashMap::with_capacity_and_hasher(cap, hash_builder))
     }
 
@@ -248,7 +256,10 @@ impl<K: Hash + Eq, V, S: BuildHasher> LruCache<K, V, S> {
     /// let s = DefaultHasher::default();
     /// let mut cache: LruCache<isize, &str> = LruCache::unbounded_with_hasher(s);
     /// ```
-    pub fn unbounded_with_hasher(hash_builder: S) -> LruCache<K, V, S> {
+    pub fn unbounded_with_hasher(hash_builder: S) -> LruCache<K, V, S>
+    where
+        S: Clone,
+    {
         LruCache::construct(usize::MAX, HashMap::with_hasher(hash_builder))
     }
 
@@ -287,8 +298,11 @@ impl<K: Hash + Eq, V, S: BuildHasher> LruCache<K, V, S> {
     /// assert_eq!(cache.get(&1), Some(&"a"));
     /// assert_eq!(cache.get(&2), Some(&"beta"));
     /// ```
-    pub fn put(&mut self, k: K, mut v: V) -> Option<V> {
-        let node_ptr = self.map.get_mut(&KeyRef { k: &k }).map(|node| {
+    pub fn put(&self, k: K, mut v: V) -> Option<V>
+    where
+        S: Clone,
+    {
+        let node_ptr = self.map.get_mut(&KeyRef { k: &k }).map(|mut node| {
             let node_ptr: *mut LruEntry<K, V> = &mut **node;
             node_ptr
         });
@@ -313,7 +327,7 @@ impl<K: Hash + Eq, V, S: BuildHasher> LruCache<K, V, S> {
                     let old_key = KeyRef {
                         k: unsafe { &(*(*(*self.tail).prev).key.as_ptr()) },
                     };
-                    let mut old_node = self.map.remove(&old_key).unwrap();
+                    let mut old_node = self.map.remove(&old_key).unwrap().1;
 
                     // drop the node's current key and val so we can overwrite them
                     unsafe {
@@ -361,12 +375,13 @@ impl<K: Hash + Eq, V, S: BuildHasher> LruCache<K, V, S> {
     /// assert_eq!(cache.get(&2), Some(&"c"));
     /// assert_eq!(cache.get(&3), Some(&"d"));
     /// ```
-    pub fn get<'a, Q>(&'a mut self, k: &Q) -> Option<&'a V>
+    pub fn get<'b, Q>(&'a self, k: &Q) -> Option<&'b V>
     where
         KeyRef<K>: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
+        S: Clone,
     {
-        if let Some(node) = self.map.get_mut(k) {
+        if let Some(mut node) = self.map.get_mut(k) {
             let node_ptr: *mut LruEntry<K, V> = &mut **node;
 
             self.detach(node_ptr);
@@ -396,12 +411,13 @@ impl<K: Hash + Eq, V, S: BuildHasher> LruCache<K, V, S> {
     /// assert_eq!(cache.get_mut(&"banana"), Some(&mut 6));
     /// assert_eq!(cache.get_mut(&"pear"), Some(&mut 2));
     /// ```
-    pub fn get_mut<'a, Q>(&'a mut self, k: &Q) -> Option<&'a mut V>
+    pub fn get_mut<'b, Q>(&'a self, k: &Q) -> Option<&'b mut V>
     where
         KeyRef<K>: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
+        S: Clone,
     {
-        if let Some(node) = self.map.get_mut(k) {
+        if let Some(mut node) = self.map.get_mut(k) {
             let node_ptr: *mut LruEntry<K, V> = &mut **node;
 
             self.detach(node_ptr);
@@ -429,10 +445,11 @@ impl<K: Hash + Eq, V, S: BuildHasher> LruCache<K, V, S> {
     /// assert_eq!(cache.peek(&1), Some(&"a"));
     /// assert_eq!(cache.peek(&2), Some(&"b"));
     /// ```
-    pub fn peek<'a, Q>(&'a self, k: &Q) -> Option<&'a V>
+    pub fn peek<'b, Q>(&'a self, k: &Q) -> Option<&'b V>
     where
         KeyRef<K>: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
+        S: Clone,
     {
         self.map
             .get(k)
@@ -455,14 +472,15 @@ impl<K: Hash + Eq, V, S: BuildHasher> LruCache<K, V, S> {
     /// assert_eq!(cache.peek_mut(&1), Some(&mut "a"));
     /// assert_eq!(cache.peek_mut(&2), Some(&mut "b"));
     /// ```
-    pub fn peek_mut<'a, Q>(&'a mut self, k: &Q) -> Option<&'a mut V>
+    pub fn peek_mut<'b, Q>(&'a mut self, k: &Q) -> Option<&'b mut V>
     where
         KeyRef<K>: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
+        S: Clone,
     {
         match self.map.get_mut(k) {
             None => None,
-            Some(node) => Some(unsafe { &mut (*(*node).val.as_mut_ptr()) as &mut V }),
+            Some(mut node) => Some(unsafe { &mut (*(*node).val.as_mut_ptr()) as &mut V }),
         }
     }
 
@@ -481,7 +499,10 @@ impl<K: Hash + Eq, V, S: BuildHasher> LruCache<K, V, S> {
     ///
     /// assert_eq!(cache.peek_lru(), Some((&1, &"a")));
     /// ```
-    pub fn peek_lru<'a>(&'_ self) -> Option<(&'a K, &'a V)> {
+    pub fn peek_lru<'b>(&'_ self) -> Option<(&'b K, &'b V)>
+    where
+        S: Clone,
+    {
         if self.is_empty() {
             return None;
         }
@@ -517,6 +538,7 @@ impl<K: Hash + Eq, V, S: BuildHasher> LruCache<K, V, S> {
     where
         KeyRef<K>: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
+        S: Clone,
     {
         self.map.contains_key(k)
     }
@@ -537,14 +559,15 @@ impl<K: Hash + Eq, V, S: BuildHasher> LruCache<K, V, S> {
     /// assert_eq!(cache.pop(&2), None);
     /// assert_eq!(cache.len(), 0);
     /// ```
-    pub fn pop<Q>(&mut self, k: &Q) -> Option<V>
+    pub fn pop<Q>(&self, k: &Q) -> Option<V>
     where
         KeyRef<K>: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
+        S: Clone,
     {
         match self.map.remove(k) {
             None => None,
-            Some(mut old_node) => {
+            Some((_, mut old_node)) => {
                 unsafe {
                     ptr::drop_in_place(old_node.key.as_mut_ptr());
                 }
@@ -574,7 +597,10 @@ impl<K: Hash + Eq, V, S: BuildHasher> LruCache<K, V, S> {
     /// assert_eq!(cache.pop_lru(), None);
     /// assert_eq!(cache.len(), 0);
     /// ```
-    pub fn pop_lru(&mut self) -> Option<(K, V)> {
+    pub fn pop_lru(&self) -> Option<(K, V)>
+    where
+        S: Clone,
+    {
         let node = self.remove_last()?;
         // N.B.: Can't destructure directly because of https://github.com/rust-lang/rust/issues/28536
         let node = *node;
@@ -600,7 +626,10 @@ impl<K: Hash + Eq, V, S: BuildHasher> LruCache<K, V, S> {
     /// cache.put(3, "c");
     /// assert_eq!(cache.len(), 2);
     /// ```
-    pub fn len(&self) -> usize {
+    pub fn len(&self) -> usize
+    where
+        S: Clone,
+    {
         self.map.len()
     }
 
@@ -616,7 +645,10 @@ impl<K: Hash + Eq, V, S: BuildHasher> LruCache<K, V, S> {
     /// cache.put(1, "a");
     /// assert!(!cache.is_empty());
     /// ```
-    pub fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool
+    where
+        S: Clone,
+    {
         self.map.len() == 0
     }
 
@@ -654,7 +686,10 @@ impl<K: Hash + Eq, V, S: BuildHasher> LruCache<K, V, S> {
     /// assert_eq!(cache.get(&3), Some(&"c"));
     /// assert_eq!(cache.get(&4), Some(&"d"));
     /// ```
-    pub fn resize(&mut self, cap: usize) {
+    pub fn resize(&mut self, cap: usize)
+    where
+        S: Clone,
+    {
         // return early if capacity doesn't change
         if cap == self.cap {
             return;
@@ -686,7 +721,10 @@ impl<K: Hash + Eq, V, S: BuildHasher> LruCache<K, V, S> {
     /// cache.clear();
     /// assert_eq!(cache.len(), 0);
     /// ```
-    pub fn clear(&mut self) {
+    pub fn clear(&mut self)
+    where
+        S: Clone,
+    {
         while self.pop_lru().is_some() {}
     }
 
@@ -707,7 +745,10 @@ impl<K: Hash + Eq, V, S: BuildHasher> LruCache<K, V, S> {
     ///     println!("key: {} val: {}", key, val);
     /// }
     /// ```
-    pub fn iter(&self) -> Iter<'_, K, V> {
+    pub fn iter(&self) -> Iter<'_, K, V>
+    where
+        S: Clone,
+    {
         Iter {
             len: self.len(),
             ptr: unsafe { (*self.head).next },
@@ -742,7 +783,10 @@ impl<K: Hash + Eq, V, S: BuildHasher> LruCache<K, V, S> {
     ///     }
     /// }
     /// ```
-    pub fn iter_mut(&mut self) -> IterMut<'_, K, V> {
+    pub fn iter_mut(&self) -> IterMut<'_, K, V>
+    where
+        S: Clone,
+    {
         IterMut {
             len: self.len(),
             ptr: unsafe { (*self.head).next },
@@ -751,14 +795,17 @@ impl<K: Hash + Eq, V, S: BuildHasher> LruCache<K, V, S> {
         }
     }
 
-    fn remove_last(&mut self) -> Option<Box<LruEntry<K, V>>> {
+    fn remove_last(&self) -> Option<Box<LruEntry<K, V>>>
+    where
+        S: Clone,
+    {
         let prev;
         unsafe { prev = (*self.tail).prev }
         if prev != self.head {
             let old_key = KeyRef {
                 k: unsafe { &(*(*(*self.tail).prev).key.as_ptr()) },
             };
-            let mut old_node = self.map.remove(&old_key).unwrap();
+            let mut old_node = self.map.remove(&old_key).unwrap().1;
             let node_ptr: *mut LruEntry<K, V> = &mut *old_node;
             self.detach(node_ptr);
             Some(old_node)
@@ -767,14 +814,14 @@ impl<K: Hash + Eq, V, S: BuildHasher> LruCache<K, V, S> {
         }
     }
 
-    fn detach(&mut self, node: *mut LruEntry<K, V>) {
+    fn detach(&self, node: *mut LruEntry<K, V>) {
         unsafe {
             (*(*node).prev).next = (*node).next;
             (*(*node).next).prev = (*node).prev;
         }
     }
 
-    fn attach(&mut self, node: *mut LruEntry<K, V>) {
+    fn attach(&self, node: *mut LruEntry<K, V>) {
         unsafe {
             (*node).next = (*self.head).next;
             (*node).prev = self.head;
@@ -784,9 +831,9 @@ impl<K: Hash + Eq, V, S: BuildHasher> LruCache<K, V, S> {
     }
 }
 
-impl<K, V, S> Drop for LruCache<K, V, S> {
+impl<K: Eq + Hash, V, S: Clone + BuildHasher> Drop for LruCache<K, V, S> {
     fn drop(&mut self) {
-        self.map.values_mut().for_each(|e| unsafe {
+        self.map.iter_mut().for_each(|mut e| unsafe {
             ptr::drop_in_place(e.key.as_mut_ptr());
             ptr::drop_in_place(e.val.as_mut_ptr());
         });
@@ -799,7 +846,7 @@ impl<K, V, S> Drop for LruCache<K, V, S> {
     }
 }
 
-impl<'a, K: Hash + Eq, V, S: BuildHasher> IntoIterator for &'a LruCache<K, V, S> {
+impl<'a, K: Hash + Eq, V, S: BuildHasher + Clone> IntoIterator for &'a LruCache<K, V, S> {
     type Item = (&'a K, &'a V);
     type IntoIter = Iter<'a, K, V>;
 
@@ -808,7 +855,7 @@ impl<'a, K: Hash + Eq, V, S: BuildHasher> IntoIterator for &'a LruCache<K, V, S>
     }
 }
 
-impl<'a, K: Hash + Eq, V, S: BuildHasher> IntoIterator for &'a mut LruCache<K, V, S> {
+impl<'a, K: Hash + Eq, V, S: BuildHasher + Clone> IntoIterator for &'a mut LruCache<K, V, S> {
     type Item = (&'a K, &'a mut V);
     type IntoIter = IterMut<'a, K, V>;
 
@@ -820,8 +867,14 @@ impl<'a, K: Hash + Eq, V, S: BuildHasher> IntoIterator for &'a mut LruCache<K, V
 // The compiler does not automatically derive Send and Sync for LruCache because it contains
 // raw pointers. The raw pointers are safely encapsulated by LruCache though so we can
 // implement Send and Sync for it below.
-unsafe impl<K: Send, V: Send, S: Send> Send for LruCache<K, V, S> {}
-unsafe impl<K: Sync, V: Sync, S: Sync> Sync for LruCache<K, V, S> {}
+unsafe impl<K: Eq + Hash + Send, V: Send, S: Send + Clone + BuildHasher> Send
+    for LruCache<K, V, S>
+{
+}
+unsafe impl<K: Eq + Hash + Sync, V: Sync, S: Sync + Clone + BuildHasher> Sync
+    for LruCache<K, V, S>
+{
+}
 
 impl<K: Hash + Eq, V> fmt::Debug for LruCache<K, V> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -1012,9 +1065,10 @@ mod tests {
         assert_eq!(res.1, &kv.1);
     }
 
+    use super::DefaultHasher;
     #[test]
     fn test_unbounded() {
-        let mut cache = LruCache::unbounded();
+        let mut cache = LruCache::<_, _, DefaultHasher>::unbounded();
         for i in 0..13370 {
             cache.put(i, ());
         }
