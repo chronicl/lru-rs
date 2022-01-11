@@ -472,7 +472,7 @@ impl<'a, K: 'a + Eq + Hash, V: 'a, S: 'a + Clone + BuildHasher> LruCache<K, V, S
     /// assert_eq!(cache.peek_mut(&1), Some(&mut "a"));
     /// assert_eq!(cache.peek_mut(&2), Some(&mut "b"));
     /// ```
-    pub fn peek_mut<'b, Q>(&'a mut self, k: &Q) -> Option<&'b mut V>
+    pub fn peek_mut<'b, Q>(&'a self, k: &Q) -> Option<&'b mut V>
     where
         KeyRef<K>: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
@@ -721,7 +721,7 @@ impl<'a, K: 'a + Eq + Hash, V: 'a, S: 'a + Clone + BuildHasher> LruCache<K, V, S
     /// cache.clear();
     /// assert_eq!(cache.len(), 0);
     /// ```
-    pub fn clear(&mut self)
+    pub fn clear(&self)
     where
         S: Clone,
     {
